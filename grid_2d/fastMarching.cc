@@ -174,7 +174,7 @@ bool fastMarching(ArrayND<double>& costmap,
 
     nBurnt++;
 
-    if ((nBurnt % 1000) == 0)
+    if ((nBurnt % 10000) == 0)
       cout << "Progress: " << (double)nBurnt / costmap.numel() << endl;
   }
 

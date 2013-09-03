@@ -102,13 +102,14 @@
 #include <iostream>
 #include "CImg.h"
 
-#define TEST_IMAGE_FILES "grid_2d/testMap0.jpg grid_2d/testMap1.jpg grid_2d/testMap2.jpg"
+#define TEST_IMAGE_FILES "grid_2d/testMap0.jpg grid_2d/testMap1.jpg" // grid_2d/testMap2.jpg"
+#define IMAGE_CHANNELS 3
 #define N_BLUR_FEATURES 10
 #define FEATURE_MIN_BLUR 1.0
 #define FEATURE_MAX_BLUR 40.0
 #define LOSS_FUNC_SIGMA 20.0
 #define LEARCH_LEARN_RATE 10.0
-#define LEARCH_ITERATIONS 100
+#define LEARCH_ITERATIONS 2
 #define GRID_CELL_SIZE 1
 #define FMM_MIN_COST 1e-6
 #define LEARCH_MIN_COST 1.0
@@ -136,8 +137,35 @@ public:
     }
   }
 
+  Grid2DEnvironment(Grid2DEnvironment const& src) {
+    CopyAssign(src, *this);
+  }
+
+  ~Grid2DEnvironment() {
+    blurredMaps.clear();
+  }
+
+  Grid2DEnvironment&
+  operator=(Grid2DEnvironment const& src) {
+    if (this != &src) CopyAssign(src, *this);
+    return *this;
+  }
+
   CImg<double> mapImage;
   std::vector<CImg<double> > blurredMaps;
+
+private:
+
+  static void CopyAssign(Grid2DEnvironment const& src, Grid2DEnvironment& dst) {
+    assert(!src.mapImage.is_shared());
+    dst.mapImage.assign(src.mapImage);
+    dst.blurredMaps.clear();
+    for (int ii = 0; ii < src.blurredMaps.size(); ii++) {
+      assert(!src.blurredMaps[ii].is_shared());
+      dst.blurredMaps.push_back(src.blurredMaps[ii]);
+    }
+  }
+
 };
 
 /**
@@ -159,11 +187,17 @@ public:
   Eval(const Grid2DBlurFeatures& featureFunc,
        const Grid2DEnvironment& env, 
        const learch_vector& state) {
-    const int nFeatures = env.blurredMaps.size() * 3 + 1;
+    const int nBlurs = env.blurredMaps.size();
+    const int nFeatures = nBlurs * IMAGE_CHANNELS + 1;
     learch_vector result(nFeatures);
-    for (int ii = 0; ii < env.blurredMaps.size(); ii++)
-      for (int ci = 0; ci < 3; ci++) 
-        result[ii*3+ci] = (env.blurredMaps[ii])(state(0), state(1), 0, ci);
+    for (int ii = 0; ii < nBlurs; ii++) {
+      CImg<double> const& blurredMap = env.blurredMaps[ii];
+      for (int ci = 0; ci < IMAGE_CHANNELS; ci++) {
+        assert(state(0) >= 0 && state(0) < blurredMap.width());
+        assert(state(1) >= 0 && state(1) < blurredMap.height());
+        result[ii * IMAGE_CHANNELS + ci] = blurredMap(state(0), state(1), 0, ci);
+      }
+    }
     result[nFeatures-1] = 1;    // bias feature
     return result;
   }
@@ -251,15 +285,14 @@ private:
   static CImg<double>
   ArrayNDToCImg(const ArrayND<double>& cost) {
     vector<int> dims = cost.getDims();
-    CImg<double> result(dims[0], dims[1], 1, 3);
+    CImg<double> result(dims[0], dims[1], 1, IMAGE_CHANNELS);
     for (int x = 0; x < dims[0]; x++) {
       for (int y = 0; y < dims[1]; y++) {
         vector<int> loc(2);
         loc[0] = x; loc[1] = y;
         double viewCost = log(cost.get(loc) + 1e-12);
-        result(x,y,0,0) = viewCost;
-        result(x,y,0,1) = viewCost;
-        result(x,y,0,2) = viewCost;
+        for (int c = 0; c < IMAGE_CHANNELS; c++)
+          result(x,y,0,c) = viewCost;
       }
     }
     return result;
@@ -270,9 +303,9 @@ private:
                   CImg<double>& img) {                  
     double imMax = img.max();
     for (int ii = 0; ii < path.size(); ii++) {
+      for (int c = 0; c < IMAGE_CHANNELS; c++)
+        img((path[ii])(0), (path[ii])(1), 0, c) = 0.;
       img((path[ii])(0), (path[ii])(1), 0, 0) = imMax;
-      img((path[ii])(0), (path[ii])(1), 0, 1) = 0.;
-      img((path[ii])(0), (path[ii])(1), 0, 2) = 0.;
     }
     img.resize(DISPLAY_SIZE_X, DISPLAY_SIZE_Y);
   }
@@ -338,12 +371,33 @@ public:
     return path;
   }
 
+  static CImg<double>
+  ConvertToRGB(CImg<double> const& src) {
+    if (src.spectrum() == 1) {
+
+      // FIXME: doesn't currently work with grayscale images
+//      assert(false);
+
+      CImg<double> result(src.width(), src.height(), 1, 3);
+      for (int x = 0; x < src.width(); x++)
+        for (int y = 0; y < src.height(); y++)
+          for (int c = 0; c < 3; c++)
+            result(x,y,0,c) = src(x,y,0,0);
+      return result;
+    } 
+    return CImg<double>(src);
+  }
+
   static std::vector<EnvAndPath>*
   GetTrainingData(const std::vector<std::string>& fnames) {
     std::vector<EnvAndPath>* result = new std::vector<EnvAndPath>();
     for (int iImage = 0; iImage < fnames.size(); iImage++) {
-      CImg<double> image(fnames[iImage].c_str());
+      CImg<double> rawImage(fnames[iImage].c_str());
+      CImg<double> image = ConvertToRGB(rawImage);
       image += 1.0;
+
+      printf("image max = %g\n", image.max());
+
       CImgDisplay display(image, "Click and drag to define training path");
       cout << "Click and drag to define training path\n";
       Grid2DEnvironment 
@@ -362,10 +416,10 @@ public:
 
    // Type aliases
   typedef Grid2DEnvironment Env;
-  //  typedef LinearRegressor BaseReg;
-  //  typedef LinearRegressorParams BaseRegParams;
-  typedef StepRegressor<LinearRegressor> BaseReg;
-  typedef StepRegressorParams<LinearRegressorParams> BaseRegParams;
+  typedef LinearRegressor BaseReg;
+  typedef LinearRegressorParams BaseRegParams;
+  //  typedef StepRegressor<LinearRegressor> BaseReg;
+  //  typedef StepRegressorParams<LinearRegressorParams> BaseRegParams;
   typedef SumThreshRegressor<BaseReg> Reg;
   typedef SumThreshRegressorParams<BaseRegParams> RegParams;
   typedef Grid2DBlurFeatures FeatureFunc;
@@ -374,8 +428,8 @@ public:
   // The specific objective functional
   typedef LEARCHObjective<Env, Reg, FeatureFunc, LossFunc> ObjFuncl;
   // The specific functional optimizer
-  //  typedef NaiveFunctionalOptimizer FunclOpt;
-  typedef RepeatedGradientFunctionalOptimizer FunclOpt;
+  typedef NaiveFunctionalOptimizer FunclOpt;
+  //typedef RepeatedGradientFunctionalOptimizer FunclOpt;
   // Operations on the functional optimizer
   typedef FunctionalOptimizerOps<FunclOpt, ObjFuncl, RegParams, Reg> FunclOptOps;
 
@@ -398,21 +452,6 @@ public:
     BaseRegParams baseRegParams((LinearRegressorParams()));
     Reg costFunc0(baseReg, LEARCH_MIN_COST);
     RegParams regParams(baseRegParams, LEARCH_MIN_COST);
-
-
-
-
-
-
-    // TESTING
-    // TESTING
-    // TESTING
-    learch_vector test;
-    BasicRegressorOps<StepRegressor<LinearRegressor> >::Eval(baseReg, test);
-    BasicRegressorOps<Reg>::Eval(costFunc0, test);
-
-
-
 
     FunclOptOps::Optimize(funclOpt, objFuncl, regParams, costFunc0, LEARCH_ITERATIONS);
   }

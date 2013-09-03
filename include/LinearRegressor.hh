@@ -26,7 +26,7 @@ public:
     : wtVec(learch_vector::Zero(nFeatures)) {
   }
 
-  LinearRegressor(const learch_vector& _wtVec) 
+  explicit LinearRegressor(const learch_vector& _wtVec) 
     : wtVec(_wtVec) {
   }
 

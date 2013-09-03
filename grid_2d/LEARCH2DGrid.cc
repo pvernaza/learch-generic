@@ -454,6 +454,8 @@ public:
     RegParams regParams(baseRegParams, LEARCH_MIN_COST);
 
     FunclOptOps::Optimize(funclOpt, objFuncl, regParams, costFunc0, LEARCH_ITERATIONS);
+
+    delete rawTrainData;
   }
 
 };

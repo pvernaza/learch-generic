@@ -3,12 +3,16 @@
 
 #include "LEARCHCommon.hh"
 #include "Regressor.hh"
+#include <sstream>
 #include <vector>
 
 /**
    Parameters controlling the training of a linear regressor
  */
-class LinearRegressorParams {  
+class LinearRegressorParams {
+public:
+  LinearRegressorParams(double _ridge) : ridge(_ridge) {};
+  double ridge;
 };
 
 /**
@@ -17,18 +21,21 @@ class LinearRegressorParams {
 class LinearRegressor {
 
   friend class BasicRegressorOps<LinearRegressor>;
+  friend class DbgRegressorOps<LinearRegressor>;
 
 public:
 
-  LinearRegressor() {};
+  LinearRegressor()
+    : wtVec()
+  { };
 
   explicit LinearRegressor(int nFeatures) 
-    : wtVec(learch_vector::Zero(nFeatures)) {
-  }
+    : wtVec(learch_vector::Zero(nFeatures))
+  { }
 
   explicit LinearRegressor(const learch_vector& _wtVec) 
-    : wtVec(_wtVec) {
-  }
+    : wtVec(_wtVec)
+  { }
 
   learch_vector GetWeightVector() { return wtVec; }
 
@@ -49,16 +56,24 @@ public:
 
     assert(trainData.size() > 0);
 
+    int nWeights = trainData[0].first.size();
+
     learch_vector ys(trainData.size());
     for (int i = 0; i < trainData.size(); i++)
       ys(i) = trainData[i].second;
     
-    Eigen::MatrixXd rMat(trainData.size(), trainData[0].first.size());
+    Eigen::MatrixXd aMat(trainData.size(), nWeights);
     for (int i = 0; i < trainData.size(); i++)
-      rMat.row(i) = trainData[i].first;
+      aMat.row(i) = trainData[i].first;
+
+    Eigen::MatrixXd lMat = aMat.transpose() * aMat 
+      + regParams.ridge * Eigen::MatrixXd::Identity(nWeights, nWeights);
+
+    learch_vector rhs = aMat.transpose() * ys;
 
     learch_vector wtVec = 
-      rMat.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(ys);
+      lMat.fullPivLu().solve(rhs);
+      //      rMat.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV).solve(ys);
     
     return LinearRegressor(wtVec);
   }
@@ -73,6 +88,19 @@ public:
   Eval(const LinearRegressor& reg, const learch_vector& state) {
     if (reg.wtVec.size() == 0) return 0;
     return reg.wtVec.dot(state);
+  }
+
+};
+
+template <> 
+class DbgRegressorOps<LinearRegressor> {
+public:
+
+  static std::string
+  ToString(LinearRegressor const& reg) {
+    std::ostringstream result;
+    result << reg.wtVec;
+    return std::string("LinearRegressor( ") + result.str() + std::string(")");
   }
 
 };

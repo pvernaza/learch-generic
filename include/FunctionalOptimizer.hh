@@ -4,6 +4,8 @@
 #include "ObjectiveFunctional.hh"
 #include "Regressor.hh"
 
+#include <iostream>
+
 /**
    This class defines operations supported by a functional optimizer.
    \tparam FunclOpt The type of a functional optimizer
@@ -61,6 +63,13 @@ public:
            const Reg& reg0,
            int nIterations) {
     if (nIterations == 0) return reg0;
+
+
+    std::cout << "Func. opt. initial regressor = " << 
+      DbgRegressorOps<Reg>::ToString(reg0) << "\n";
+
+
+
     std::vector<std::pair<learch_vector, double> > trainData = ObjFunclOps::Gradient(objFuncl, reg0);
     Reg reg = RegressorParamOps<RegParams,Reg>::Train(regParams, trainData);
     reg = ComposedRegressorOps<Reg>::Scale(reg, -funclOpt.learnRate);

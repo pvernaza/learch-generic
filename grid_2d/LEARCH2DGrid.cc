@@ -97,6 +97,7 @@
 #include "LEARCHObjective.hh"
 #include "LinearRegressor.hh"
 #include "StepRegressor.hh"
+#include "SumThreshRegressor.hh"
 
 #include <boost/algorithm/string.hpp>
 #include <iostream>
@@ -105,11 +106,12 @@
 #define TEST_IMAGE_FILES "grid_2d/testMap0.jpg grid_2d/testMap1.jpg" // grid_2d/testMap2.jpg"
 #define IMAGE_CHANNELS 3
 #define N_BLUR_FEATURES 10
-#define FEATURE_MIN_BLUR 1.0
+#define FEATURE_MIN_BLUR 0.0
 #define FEATURE_MAX_BLUR 40.0
 #define LOSS_FUNC_SIGMA 20.0
-#define LEARCH_LEARN_RATE 10.0
-#define LEARCH_ITERATIONS 2
+#define LEARCH_LEARN_RATE 2.0
+#define LEARCH_LINEAR_RIDGE (1.0 / ((LEARCH_LEARN_RATE)*(LEARCH_LEARN_RATE)))
+#define LEARCH_ITERATIONS 20
 #define GRID_CELL_SIZE 1
 #define FMM_MIN_COST 1e-6
 #define LEARCH_MIN_COST 1.0
@@ -133,16 +135,22 @@ public:
     : mapImage(_mapImage) {
     for (int ii = 0; ii < nBlurLevels; ii++) {
       double sigma = minBlur + ii * (maxBlur - minBlur) / (nBlurLevels-1);
-      blurredMaps.push_back(mapImage.get_blur(sigma, sigma, true, true));
+      blurredMaps.push_back(mapImage.get_blur(sigma));
     }
-  }
-
-  Grid2DEnvironment(Grid2DEnvironment const& src) {
-    CopyAssign(src, *this);
   }
 
   ~Grid2DEnvironment() {
     blurredMaps.clear();
+  }
+
+  CImg<double> mapImage;
+  std::vector<CImg<double> > blurredMaps;
+
+  /*
+private:
+
+  Grid2DEnvironment(Grid2DEnvironment const& src) {
+    CopyAssign(src, *this);
   }
 
   Grid2DEnvironment&
@@ -150,11 +158,6 @@ public:
     if (this != &src) CopyAssign(src, *this);
     return *this;
   }
-
-  CImg<double> mapImage;
-  std::vector<CImg<double> > blurredMaps;
-
-private:
 
   static void CopyAssign(Grid2DEnvironment const& src, Grid2DEnvironment& dst) {
     assert(!src.mapImage.is_shared());
@@ -165,6 +168,7 @@ private:
       dst.blurredMaps.push_back(src.blurredMaps[ii]);
     }
   }
+  */
 
 };
 
@@ -198,7 +202,73 @@ public:
         result[ii * IMAGE_CHANNELS + ci] = blurredMap(state(0), state(1), 0, ci);
       }
     }
-    result[nFeatures-1] = 1;    // bias feature
+    result(nFeatures-1) = 1;    // bias feature
+    return result;
+  }
+
+};
+
+class TrainingDataRetriever {
+
+public:
+
+  typedef std::pair<Grid2DEnvironment, learch_path> EnvAndPath;
+
+  static std::vector<std::string>
+  ParseTrainingFilenames(const std::string& concatNames) {
+    std::vector<std::string> result;
+    boost::split(result, concatNames, boost::is_any_of(" "));
+    return result;
+  }
+
+  static learch_path
+  GetPathFromClicks(CImgDisplay& display) {
+    learch_path path;
+    while (!display.is_closed()) {
+      display.wait();
+      if (display.button()) {
+        learch_vector xyLoc(2);
+        xyLoc << display.mouse_x(), display.mouse_y();
+        path.push_back(xyLoc);
+        printf("click at %g, %g\n", xyLoc(0), xyLoc(1));
+      }
+    }
+    return path;
+  }
+
+  static CImg<double>
+  ConvertToRGB(CImg<double> const& src) {
+    if (src.spectrum() == 1) {
+
+      // FIXME: doesn't currently work with grayscale images
+//      assert(false);
+
+      CImg<double> result(src.width(), src.height(), 1, 3);
+      for (int x = 0; x < src.width(); x++)
+        for (int y = 0; y < src.height(); y++)
+          for (int c = 0; c < 3; c++)
+            result(x,y,0,c) = src(x,y);
+      return result;
+    } 
+    return CImg<double>(src);
+  }
+
+  static std::vector<EnvAndPath>*
+  GetTrainingData(const std::vector<std::string>& fnames) {
+    std::vector<EnvAndPath>* result = new std::vector<EnvAndPath>();
+    for (int iImage = 0; iImage < fnames.size(); iImage++) {
+      CImg<double> rawImage(fnames[iImage].c_str());
+      CImg<double> image(ConvertToRGB(rawImage));
+      //CImg<double> image(fnames[iImage].c_str());
+      image += 1.0;
+
+      CImgDisplay display(image, "Click and drag to define training path");
+      cout << "Click and drag to define training path\n";
+      Grid2DEnvironment env
+        (image, N_BLUR_FEATURES, FEATURE_MIN_BLUR, FEATURE_MAX_BLUR);
+      EnvAndPath envAndPath(env, GetPathFromClicks(display));
+      result->push_back(envAndPath);
+    }
     return result;
   }
 
@@ -213,10 +283,11 @@ class LEARCHPlanner<Grid2DEnvironment> {
 public:
 
   static learch_path*
-  Plan(const Grid2DEnvironment& env,
+  Plan(Grid2DEnvironment const& env,
        const LEARCHPlannerCost<Grid2DEnvironment>& costFunc,
        const learch_vector& start,
        const learch_vector& goal) {
+
     printf("Evaluating loss-augmented cost function\n");
     vector<int> gridSize(2);
     gridSize[0] = env.mapImage.width();
@@ -226,9 +297,15 @@ public:
       for (int y = 0; y < gridSize[1]; y++) {
         learch_vector state(2);
         state << x, y;
+
+        assert(state(0) >= 0 && state(0) < gridSize[0]);
+        assert(state(1) >= 0 && state(1) < gridSize[1]);
+
         costGridMem[x][y] = costFunc.Eval(env, state) + FMM_MIN_COST;
+        assert(costGridMem[x][y] >= 0);
       }
     }
+
     printf("Calling fast marching method\n");
     vector<double> fmmCostDx(2);   // dimensions of a grid cell
     fmmCostDx[0] = GRID_CELL_SIZE;
@@ -291,6 +368,7 @@ private:
         vector<int> loc(2);
         loc[0] = x; loc[1] = y;
         double viewCost = log(cost.get(loc) + 1e-12);
+        //        double viewCost = cost.get(loc);
         for (int c = 0; c < IMAGE_CHANNELS; c++)
           result(x,y,0,c) = viewCost;
       }
@@ -334,82 +412,6 @@ private:
 /**
    Methods to retrieve training data from input images
  */
-class TrainingDataRetriever {
-
-public:
-
-  typedef std::pair<Grid2DEnvironment, learch_path> EnvAndPath;
-
-  static std::vector<std::string>
-  ParseTrainingFilenames(const std::string& concatNames) {
-    std::vector<std::string> result;
-    boost::split(result, concatNames, boost::is_any_of(" "));
-    return result;
-  }
-
-  static Eigen::MatrixXd 
-  CImgToEigenMatrix(const CImg<double>& image) {
-    Eigen::MatrixXd result(image.height(), image.width());
-    for (int x = 0; x < image.width(); x++)
-      for (int y = 0; y < image.height(); y++) 
-        result(x,y) = image(x,y,0,0);
-    return result;
-  }
-
-  static learch_path
-  GetPathFromClicks(CImgDisplay& display) {
-    learch_path path;
-    while (!display.is_closed()) {
-      display.wait();
-      if (display.button()) {
-        learch_vector xyLoc(2);
-        xyLoc << display.mouse_x(), display.mouse_y();
-        path.push_back(xyLoc);
-        printf("click at %g, %g\n", xyLoc(0), xyLoc(1));
-      }
-    }
-    return path;
-  }
-
-  static CImg<double>
-  ConvertToRGB(CImg<double> const& src) {
-    if (src.spectrum() == 1) {
-
-      // FIXME: doesn't currently work with grayscale images
-//      assert(false);
-
-      CImg<double> result(src.width(), src.height(), 1, 3);
-      for (int x = 0; x < src.width(); x++)
-        for (int y = 0; y < src.height(); y++)
-          for (int c = 0; c < 3; c++)
-            result(x,y,0,c) = src(x,y,0,0);
-      return result;
-    } 
-    return CImg<double>(src);
-  }
-
-  static std::vector<EnvAndPath>*
-  GetTrainingData(const std::vector<std::string>& fnames) {
-    std::vector<EnvAndPath>* result = new std::vector<EnvAndPath>();
-    for (int iImage = 0; iImage < fnames.size(); iImage++) {
-      CImg<double> rawImage(fnames[iImage].c_str());
-      CImg<double> image = ConvertToRGB(rawImage);
-      image += 1.0;
-
-      printf("image max = %g\n", image.max());
-
-      CImgDisplay display(image, "Click and drag to define training path");
-      cout << "Click and drag to define training path\n";
-      Grid2DEnvironment 
-        env(image, N_BLUR_FEATURES, FEATURE_MIN_BLUR, FEATURE_MAX_BLUR);
-      EnvAndPath envAndPath(env, GetPathFromClicks(display));
-      result->push_back(envAndPath);
-    }
-    return result;
-  }
-
-};
-
 class MainProgram {
 
 public:
@@ -449,7 +451,7 @@ public:
     //    BaseReg baseReg;
     //    BaseRegParams baseRegParams;
     BaseReg baseReg((LinearRegressor()));
-    BaseRegParams baseRegParams((LinearRegressorParams()));
+    BaseRegParams baseRegParams((LinearRegressorParams(LEARCH_LINEAR_RIDGE)));
     Reg costFunc0(baseReg, LEARCH_MIN_COST);
     RegParams regParams(baseRegParams, LEARCH_MIN_COST);
 
